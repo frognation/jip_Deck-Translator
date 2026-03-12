@@ -1,0 +1,14 @@
+{
+  "name": "jip-translator",
+  "version": "1.0.0",
+  "description": "Figma plugin to translate text frames into any language using AI",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.100.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  }
+}

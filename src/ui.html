@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <style>/* __INJECT_CSS__ */</style>
+</head>
+<body>
+  <!-- ─── Header ──────────────────────────────────────────── -->
+  <header class="header">
+    <div class="header-left">
+      <span class="logo">jip</span>
+      <span class="header-title">Translator</span>
+    </div>
+    <button id="btn-about" class="icon-btn" title="About this plugin">?</button>
+  </header>
+
+  <!-- ─── Main Content ────────────────────────────────────── -->
+  <main id="main-view" class="main">
+    <!-- Selection Status -->
+    <section class="section" id="selection-section">
+      <div class="selection-status" id="selection-status">
+        <span class="status-icon">&#9744;</span>
+        <span id="selection-text">Select frames to translate</span>
+      </div>
+      <button id="btn-refresh" class="btn-secondary btn-sm">Refresh Selection</button>
+    </section>
+
+    <!-- Model Selection -->
+    <section class="section">
+      <label class="label">AI Model</label>
+      <select id="model-select" class="select">
+        <optgroup label="Free (API key required)">
+          <option value="deepl-free">DeepL Free (free plan)</option>
+        </optgroup>
+        <optgroup label="OpenAI (API key required)">
+          <option value="gpt-5.4">GPT-5.4</option>
+          <option value="gpt-5.4-pro">GPT-5.4 Pro</option>
+          <option value="gpt-5-mini">GPT-5 Mini</option>
+          <option value="gpt-5.2">GPT-5.2</option>
+          <option value="gpt-4o">GPT-4o</option>
+          <option value="gpt-4o-mini">GPT-4o Mini</option>
+          <option value="gpt-4.1">GPT-4.1</option>
+          <option value="gpt-4.1-mini">GPT-4.1 Mini</option>
+        </optgroup>
+        <optgroup label="Anthropic (API key required)">
+          <option value="claude-opus-4.6">Claude Opus 4.6</option>
+          <option value="claude-sonnet-4-5">Claude Sonnet 4.5</option>
+          <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
+        </optgroup>
+        <optgroup label="Google (API key required)">
+          <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+          <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+        </optgroup>
+        <optgroup label="DeepL (API key required)">
+          <option value="deepl-pro">DeepL Pro</option>
+        </optgroup>
+      </select>
+
+      <div id="api-key-row" class="field-row hidden">
+        <label class="label">API Key</label>
+        <div class="input-row">
+          <input id="api-key" type="password" class="input" placeholder="Enter API key..." />
+          <button id="btn-toggle-key" class="icon-btn" title="Show/hide key">&#128065;</button>
+          <button id="btn-save-key" class="icon-btn" title="Save key locally">&#128190;</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Language Selection -->
+    <section class="section">
+      <label class="label">Languages</label>
+      <div class="lang-row">
+        <div class="lang-field">
+          <label class="sub-label">From</label>
+          <div class="searchable-select" id="source-lang-wrapper">
+            <input id="source-lang-input" class="input" placeholder="Auto-detect" value="auto" />
+            <div class="dropdown-list" id="source-lang-dropdown"></div>
+          </div>
+        </div>
+        <span class="lang-arrow">&#10132;</span>
+        <div class="lang-field">
+          <label class="sub-label">To</label>
+          <div class="searchable-select" id="target-lang-wrapper">
+            <input id="target-lang-input" class="input" placeholder="Select language..." />
+            <div class="dropdown-list" id="target-lang-dropdown"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Output Mode -->
+    <section class="section">
+      <label class="label">Output Mode</label>
+      <div class="radio-group">
+        <label class="radio-option">
+          <input type="radio" name="output-mode" value="replace" checked />
+          <div class="radio-content">
+            <strong>Replace</strong>
+            <span class="radio-desc">Replace original text with translation</span>
+          </div>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="output-mode" value="append" />
+          <div class="radio-content">
+            <strong>Append</strong>
+            <span class="radio-desc">Add translation below original text</span>
+          </div>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="output-mode" value="duplicate" />
+          <div class="radio-content">
+            <strong>Duplicate + Auto Layout</strong>
+            <span class="radio-desc">Clone text box and wrap with auto-layout</span>
+          </div>
+        </label>
+      </div>
+
+      <div id="layout-options" class="sub-options hidden">
+        <label class="sub-label">Layout Direction</label>
+        <select id="layout-direction" class="select select-sm">
+          <option value="vertical-wrap">Vertical (wrap overflow)</option>
+          <option value="vertical">Vertical (no wrap)</option>
+          <option value="horizontal-wrap">Horizontal (wrap overflow)</option>
+          <option value="horizontal">Horizontal (no wrap)</option>
+        </select>
+      </div>
+    </section>
+
+    <!-- Translation Guidelines -->
+    <section class="section">
+      <div class="section-header">
+        <label class="label">Translation Guidelines</label>
+        <button id="btn-toggle-guidelines" class="icon-btn chevron-btn">&#9660;</button>
+      </div>
+      <div id="guidelines-panel" class="collapsible hidden">
+        <!-- Preset templates -->
+        <label class="sub-label">Preset Templates</label>
+        <div class="template-chips" id="template-chips">
+          <button class="chip" data-template="concise">Concise & Clear</button>
+          <button class="chip" data-template="slide">Slide / Presentation</button>
+          <button class="chip" data-template="detailed">Detailed & Thorough</button>
+          <button class="chip" data-template="polite">Polite & Formal</button>
+          <button class="chip" data-template="casual">Casual & Friendly</button>
+          <button class="chip" data-template="technical">Technical / Dev</button>
+        </div>
+
+        <!-- Custom guideline -->
+        <label class="sub-label">Custom Guidelines</label>
+        <textarea id="guideline-text" class="textarea" rows="4" placeholder="Add custom translation instructions...&#10;e.g. 'Use formal Korean (합니다체). Keep brand names in English.'"></textarea>
+
+        <!-- MD file upload -->
+        <div class="field-row">
+          <button id="btn-upload-md" class="btn-secondary btn-sm">Upload .md file</button>
+          <span id="md-filename" class="md-filename"></span>
+          <input id="md-file-input" type="file" accept=".md,.txt" class="hidden" />
+        </div>
+
+        <!-- Save/Load custom guideline -->
+        <div class="field-row" style="margin-top:6px;">
+          <button id="btn-save-guideline" class="btn-secondary btn-sm">Save Guideline</button>
+          <button id="btn-load-guideline" class="btn-secondary btn-sm">Load Saved</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Translate Button -->
+    <section class="section action-section">
+      <button id="btn-translate" class="btn-primary" disabled>
+        <span id="btn-translate-text">Translate</span>
+        <span id="btn-translate-spinner" class="spinner hidden"></span>
+      </button>
+      <div id="progress-bar" class="progress-bar hidden">
+        <div id="progress-fill" class="progress-fill"></div>
+      </div>
+      <div id="progress-text" class="progress-text hidden"></div>
+    </section>
+  </main>
+
+  <!-- ─── About View ──────────────────────────────────────── -->
+  <div id="about-view" class="about-view hidden">
+    <button id="btn-close-about" class="icon-btn close-btn">&times;</button>
+    <div class="about-content">
+      <div class="about-header">
+        <span class="logo logo-lg">jip</span>
+        <h2>Translator</h2>
+        <span class="version">v1.0.0</span>
+      </div>
+
+      <div class="about-body">
+        <h3>What is jip Translator?</h3>
+        <p>A Figma plugin that translates text across selected frames and pages using AI.
+           Works with Figma Design, FigJam, and Figma Slides.</p>
+
+        <h3>Key Features</h3>
+        <ul>
+          <li><strong>Context-aware translation</strong> &mdash; Reads all text in order across selected frames/pages, understands the full context, then translates coherently.</li>
+          <li><strong>Multiple AI models</strong> &mdash; Supports OpenAI GPT, Anthropic Claude, Google Gemini, and DeepL.</li>
+          <li><strong>Flexible output</strong> &mdash; Replace original, append translation, or duplicate with auto-layout.</li>
+          <li><strong>Custom guidelines</strong> &mdash; Use preset templates or write your own translation instructions. Upload .md files for detailed guidelines.</li>
+          <li><strong>Auto-detect source language</strong> &mdash; Or manually specify source and target languages.</li>
+        </ul>
+
+        <h3>How to Use</h3>
+        <ol>
+          <li>Select one or more frames/pages in Figma</li>
+          <li>Choose your AI model and enter API key if needed</li>
+          <li>Set source and target languages</li>
+          <li>Choose output mode (replace / append / duplicate)</li>
+          <li>Optionally add translation guidelines</li>
+          <li>Click <strong>Translate</strong></li>
+        </ol>
+
+        <h3>Tips</h3>
+        <ul>
+          <li>Select multiple frames to translate them in context together.</li>
+          <li>Use "Slide / Presentation" template for deck translations.</li>
+          <li>API keys are saved locally in your browser and never sent to any server except the AI provider.</li>
+        </ul>
+
+        <div class="about-footer">
+          <p>Made with care for designers who work across languages.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>/* __INJECT_JS__ */</script>
+</body>
+</html>
