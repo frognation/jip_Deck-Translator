@@ -16,6 +16,54 @@ interface TranslatedResult {
   nodeId: string;
   original: string;
   translated: string;
+  targetLang?: string;
+}
+
+let cachedAvailableFonts: Font[] | null = null;
+const LOCAL_DEEPL_PROXY_URL = 'http://localhost:8787/translate/deepl';
+
+async function callDeepLFromSandbox(
+  texts: string[],
+  sourceLang: string,
+  targetLang: string,
+  apiKey: string,
+  isFree: boolean,
+): Promise<string[]> {
+  let response: Response;
+  try {
+    response = await fetch(LOCAL_DEEPL_PROXY_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        texts,
+        sourceLang,
+        targetLang,
+        apiKey,
+        isFree,
+      }),
+    });
+  } catch (e: any) {
+    throw new Error(
+      `DeepL proxy network error (${LOCAL_DEEPL_PROXY_URL}). ` +
+      `Start the local proxy server and make sure Figma can reach localhost. ` +
+      `Original error: ${e?.message || 'Failed to fetch'}`
+    );
+  }
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`DeepL proxy/API error (${response.status}): ${err || response.statusText}`);
+  }
+
+  const data = await response.json();
+  return data.translations.map((t: any) => t.text);
+}
+
+async function getTextNodeById(nodeId: string): Promise<TextNode | null> {
+  const node = await figma.getNodeByIdAsync(nodeId);
+  return node && node.type === 'TEXT' ? node as TextNode : null;
 }
 
 // ─── Text Collection ────────────────────────────────────────────────────
@@ -118,12 +166,136 @@ function getPrimaryFont(textNode: TextNode): FontName | null {
   return best ? best.font : null;
 }
 
+async function getAvailableFonts(): Promise<Font[]> {
+  if (!cachedAvailableFonts) {
+    cachedAvailableFonts = await figma.listAvailableFontsAsync();
+  }
+  return cachedAvailableFonts;
+}
+
+function detectScriptSample(text: string, targetLang?: string): string {
+  if (targetLang === 'ko' || /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/.test(text)) return 'ko';
+  if (targetLang === 'ja' || /[\u3040-\u30FF]/.test(text)) return 'ja';
+  if (targetLang === 'zh-CN' || /[\u4E00-\u9FFF]/.test(text)) return 'zh-CN';
+  if (targetLang === 'zh-TW') return 'zh-TW';
+  if (targetLang === 'ar' || /[\u0600-\u06FF]/.test(text)) return 'ar';
+  if (targetLang === 'he' || /[\u0590-\u05FF]/.test(text)) return 'he';
+  if (targetLang === 'hi' || /[\u0900-\u097F]/.test(text)) return 'hi';
+  if (targetLang === 'th' || /[\u0E00-\u0E7F]/.test(text)) return 'th';
+  if (targetLang === 'ru' || targetLang === 'uk' || targetLang === 'bg' || /[\u0400-\u04FF]/.test(text)) return 'cyrillic';
+  return 'latin';
+}
+
+function getPreferredFamilies(script: string): string[] {
+  switch (script) {
+    case 'ko':
+      return ['Noto Sans CJK KR', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Pretendard', 'Inter', 'Arial Unicode MS', 'Arial'];
+    case 'ja':
+      return ['Noto Sans JP', 'Noto Sans CJK JP', 'Hiragino Sans', 'Yu Gothic', 'Inter', 'Arial Unicode MS', 'Arial'];
+    case 'zh-CN':
+      return ['Noto Sans SC', 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', 'Inter', 'Arial Unicode MS', 'Arial'];
+    case 'zh-TW':
+      return ['Noto Sans TC', 'Noto Sans CJK TC', 'PingFang TC', 'Microsoft JhengHei', 'Inter', 'Arial Unicode MS', 'Arial'];
+    case 'ar':
+      return ['Noto Sans Arabic', 'Geeza Pro', 'Arial', 'Arial Unicode MS', 'Inter'];
+    case 'he':
+      return ['Noto Sans Hebrew', 'Arial Hebrew', 'Arial', 'Arial Unicode MS', 'Inter'];
+    case 'hi':
+      return ['Noto Sans Devanagari', 'Kohinoor Devanagari', 'Arial Unicode MS', 'Inter', 'Arial'];
+    case 'th':
+      return ['Noto Sans Thai', 'Thonburi', 'Arial Unicode MS', 'Inter', 'Arial'];
+    case 'cyrillic':
+      return ['Inter', 'Noto Sans', 'Arial', 'Arial Unicode MS'];
+    default:
+      return ['Inter', 'Noto Sans', 'Arial', 'Arial Unicode MS'];
+  }
+}
+
+async function findUsableFallbackFonts(preferredStyle: string, translatedText: string, targetLang?: string): Promise<FontName[]> {
+  const availableFonts = await getAvailableFonts();
+  const script = detectScriptSample(translatedText, targetLang);
+  const preferredFamilies = getPreferredFamilies(script);
+  const candidates: FontName[] = [];
+  const seen = new Set<string>();
+
+  function pushCandidate(fontName: FontName) {
+    const key = `${fontName.family}::${fontName.style}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      candidates.push(fontName);
+    }
+  }
+
+  for (const family of preferredFamilies) {
+    const exactStyle = availableFonts.find((font) => (
+      font.fontName.family === family &&
+      font.fontName.style === preferredStyle
+    ));
+    if (exactStyle) {
+      pushCandidate(exactStyle.fontName);
+    }
+
+    const regular = availableFonts.find((font) => (
+      font.fontName.family === family &&
+      font.fontName.style === 'Regular'
+    ));
+    if (regular) {
+      pushCandidate(regular.fontName);
+    }
+
+    const anyStyle = availableFonts.find((font) => font.fontName.family === family);
+    if (anyStyle) {
+      pushCandidate(anyStyle.fontName);
+    }
+  }
+
+  for (const font of availableFonts) {
+    pushCandidate(font.fontName);
+  }
+
+  return candidates;
+}
+
+async function setCharactersWithFallback(
+  textNode: TextNode,
+  translatedText: string,
+  primaryFont: FontName | null,
+  targetLang?: string,
+): Promise<void> {
+  try {
+    textNode.characters = translatedText;
+    return;
+  } catch (e) {
+    console.warn('Direct character replacement failed, trying fallback font:', e);
+  }
+
+  const fallbackFonts = await findUsableFallbackFonts(primaryFont?.style || 'Regular', translatedText, targetLang);
+  const triedFamilies: string[] = [];
+
+  for (const fallbackFont of fallbackFonts) {
+    try {
+      await figma.loadFontAsync(fallbackFont);
+      textNode.fontName = fallbackFont;
+      textNode.characters = translatedText;
+      return;
+    } catch (fallbackError) {
+      triedFamilies.push(`${fallbackFont.family} ${fallbackFont.style}`);
+      console.warn('Fallback font failed:', fallbackFont, fallbackError);
+    }
+  }
+
+  if (triedFamilies.length === 0) {
+    throw new Error('No fallback fonts are available in this file for the translated text.');
+  }
+
+  throw new Error(`No fallback font could render this translation. Tried: ${triedFamilies.slice(0, 6).join(', ')}`);
+}
+
 // ─── Output Modes ───────────────────────────────────────────────────────
 
 async function applyReplace(result: TranslatedResult): Promise<void> {
-  const node = figma.getNodeById(result.nodeId);
-  if (!node || node.type !== 'TEXT') return;
-  const textNode = node as TextNode;
+  const textNode = await getTextNodeById(result.nodeId);
+  if (!textNode) return;
 
   // Load all fonts used in the current text
   await loadFontsForNode(textNode);
@@ -140,22 +312,12 @@ async function applyReplace(result: TranslatedResult): Promise<void> {
     }
   }
 
-  // Now replace text
-  try {
-    textNode.characters = result.translated;
-  } catch (e: any) {
-    // If setting characters fails (e.g., font doesn't support target glyphs),
-    // try with a fallback approach: delete all, then insert
-    console.warn('Direct character replacement failed, trying fallback:', e);
-    textNode.characters = '';
-    textNode.characters = result.translated;
-  }
+  await setCharactersWithFallback(textNode, result.translated, primaryFont, result.targetLang);
 }
 
 async function applyAppend(result: TranslatedResult): Promise<void> {
-  const node = figma.getNodeById(result.nodeId);
-  if (!node || node.type !== 'TEXT') return;
-  const textNode = node as TextNode;
+  const textNode = await getTextNodeById(result.nodeId);
+  if (!textNode) return;
 
   // Load all fonts used in the current text
   await loadFontsForNode(textNode);
@@ -172,17 +334,16 @@ async function applyAppend(result: TranslatedResult): Promise<void> {
     }
   }
 
-  var separator = '\n───\n';
-  textNode.characters = result.original + separator + result.translated;
+  var separator = '\n';
+  await setCharactersWithFallback(textNode, result.original + separator + result.translated, primaryFont, result.targetLang);
 }
 
 async function applyDuplicate(
   result: TranslatedResult,
   layoutMode: 'vertical-wrap' | 'vertical' | 'horizontal' | 'horizontal-wrap'
 ): Promise<void> {
-  const originalNode = figma.getNodeById(result.nodeId);
-  if (!originalNode || originalNode.type !== 'TEXT') return;
-  const textNode = originalNode as TextNode;
+  const textNode = await getTextNodeById(result.nodeId);
+  if (!textNode) return;
 
   await loadFontsForNode(textNode);
 
@@ -201,7 +362,7 @@ async function applyDuplicate(
       console.warn('Could not unify font on clone:', e);
     }
   }
-  clonedNode.characters = result.translated;
+  await setCharactersWithFallback(clonedNode, result.translated, primaryFont, result.targetLang);
 
   // Create an auto-layout frame to hold both
   const nodeParent = textNode.parent;
@@ -219,7 +380,7 @@ async function applyDuplicate(
     wrapper.layoutMode = 'VERTICAL';
   }
 
-  if (layoutMode === 'vertical-wrap' || layoutMode === 'horizontal-wrap') {
+  if (layoutMode === 'horizontal-wrap') {
     wrapper.layoutWrap = 'WRAP';
   } else {
     wrapper.layoutWrap = 'NO_WRAP';
@@ -229,6 +390,11 @@ async function applyDuplicate(
   wrapper.counterAxisSpacing = 8;
   wrapper.primaryAxisSizingMode = 'AUTO';
   wrapper.counterAxisSizingMode = 'AUTO';
+
+  if (wrapper.layoutMode === 'VERTICAL') {
+    textNode.layoutAlign = 'STRETCH';
+    clonedNode.layoutAlign = 'STRETCH';
+  }
 
   // Position wrapper at original's location
   wrapper.x = textNode.x;
@@ -304,20 +470,56 @@ figma.ui.onmessage = async (msg: any) => {
           applied++;
         } catch (e: any) {
           var errMsg = e && e.message ? e.message : 'Unknown error';
-          console.error('Failed to apply translation for ' + result.nodeId + ':', e);
-          errors.push('Node ' + result.nodeId + ': ' + errMsg);
+          const node = await figma.getNodeByIdAsync(result.nodeId);
+          const nodeLabel = node && 'name' in node && node.name
+            ? `${node.name} (${result.nodeId})`
+            : result.nodeId;
+          console.error('Failed to apply translation for ' + nodeLabel + ':', e);
+          errors.push(`Node ${nodeLabel}: ${errMsg}`);
           failed++;
         }
       }
+
+      const errorSummary = errors.length > 0
+        ? errors.slice(0, 3).join(' | ')
+        : '';
 
       figma.ui.postMessage({
         type: 'apply-complete',
         applied: applied,
         failed: failed,
         errors: errors,
+        errorSummary: errorSummary,
       });
 
       figma.notify(`Translation complete: ${applied} texts translated${failed > 0 ? `, ${failed} failed` : ''}`);
+      if (errorSummary) {
+        figma.notify(`Apply errors: ${errorSummary}`, { timeout: 7000 });
+      }
+    }
+
+    if (msg.type === 'translate-deepl') {
+      try {
+        const translations = await callDeepLFromSandbox(
+          msg.texts || [],
+          msg.sourceLang,
+          msg.targetLang,
+          msg.apiKey,
+          !!msg.isFree,
+        );
+
+        figma.ui.postMessage({
+          type: 'deepl-result',
+          requestId: msg.requestId,
+          translations,
+        });
+      } catch (e: any) {
+        figma.ui.postMessage({
+          type: 'deepl-result',
+          requestId: msg.requestId,
+          error: e?.message || 'DeepL request failed',
+        });
+      }
     }
 
     // ─── Client Storage proxy ───────────────────────────────────────

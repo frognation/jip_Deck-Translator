@@ -7,6 +7,9 @@
   "documentAccess": "dynamic-page",
   "editorType": ["figma", "figjam", "slides"],
   "networkAccess": {
+    "devAllowedDomains": [
+      "http://localhost:8787/"
+    ],
     "allowedDomains": [
       "https://api.openai.com",
       "https://api.anthropic.com",

@@ -4,7 +4,8 @@
   "description": "Figma plugin to translate text frames into any language using AI",
   "scripts": {
     "build": "node build.mjs",
-    "watch": "node build.mjs --watch"
+    "watch": "node build.mjs --watch",
+    "proxy": "node deepl-proxy.js"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.100.0",

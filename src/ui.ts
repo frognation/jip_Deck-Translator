@@ -14,6 +14,7 @@ interface TranslatedResult {
   nodeId: string;
   original: string;
   translated: string;
+  targetLang?: string;
 }
 
 // ─── State ──────────────────────────────────────────────────────────────
@@ -34,11 +35,36 @@ function storageGet(key: string): void {
 
 // Storage callback queue
 const storageCallbacks: Map<string, (value: string | null) => void> = new Map();
+const deeplCallbacks: Map<string, { resolve: (value: string[]) => void; reject: (error: Error) => void }> = new Map();
 
 function storageGetAsync(key: string): Promise<string | null> {
   return new Promise((resolve) => {
     storageCallbacks.set(key, resolve);
     storageGet(key);
+  });
+}
+
+function callDeepLViaSandbox(
+  texts: string[],
+  sourceLang: string,
+  targetLang: string,
+  apiKey: string,
+  isFree: boolean,
+): Promise<string[]> {
+  const requestId = `deepl-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return new Promise((resolve, reject) => {
+    deeplCallbacks.set(requestId, { resolve, reject });
+    parent.postMessage({
+      pluginMessage: {
+        type: 'translate-deepl',
+        requestId,
+        texts,
+        sourceLang,
+        targetLang,
+        apiKey,
+        isFree,
+      },
+    }, '*');
   });
 }
 
@@ -156,6 +182,7 @@ const btnCloseAbout = $('btn-close-about');
 // ─── Model → Provider Mapping ───────────────────────────────────────────
 function getProvider(model: string): string {
   if (model.startsWith('gpt-')) return 'openai';
+  if (model.startsWith('codex-')) return 'openai';
   if (model.startsWith('claude-')) return 'anthropic';
   if (model.startsWith('gemini-')) return 'google';
   if (model.startsWith('deepl')) return 'deepl';
@@ -489,7 +516,7 @@ function buildContextPrompt(entries: TextEntry[], sourceLang: string, targetLang
   const targetLabel = LANGUAGES.find(l => l.code === targetLang)?.name || targetLang;
 
   const textsBlock = entries
-    .map((e, i) => `[TEXT_${i}] (Frame ${e.frameIndex + 1})\n${e.text}`)
+    .map((e, i) => `[TEXT_${i}]\n${e.text}`)
     .join('\n\n');
 
   return `You are a professional translator. Translate the following texts into ${targetLabel}.
@@ -549,6 +576,7 @@ async function callOpenAI(prompt: string, apiKey: string, model: string): Promis
   // Older models (gpt-4o, gpt-4o-mini) use max_tokens
   var useNewTokenParam = model.startsWith('gpt-4.1') ||
                          model.startsWith('gpt-5') ||
+                         model.startsWith('codex-') ||
                          model.startsWith('o1') ||
                          model.startsWith('o3') ||
                          model.startsWith('o4');
@@ -631,52 +659,6 @@ async function callGemini(prompt: string, apiKey: string, model: string): Promis
   return data.candidates[0].content.parts[0].text;
 }
 
-async function callDeepL(texts: string[], sourceLang: string, targetLang: string, apiKey: string, isFree: boolean): Promise<string[]> {
-  const baseUrl = isFree
-    ? 'https://api-free.deepl.com/v2/translate'
-    : 'https://api.deepl.com/v2/translate';
-
-  // DeepL language code mapping
-  const deeplTargetMap: Record<string, string> = {
-    'en': 'EN-US', 'zh-CN': 'ZH-HANS', 'zh-TW': 'ZH-HANT',
-    'pt': 'PT-PT', 'pt-BR': 'PT-BR',
-  };
-
-  const deeplSourceMap: Record<string, string> = {
-    'zh-CN': 'ZH', 'zh-TW': 'ZH', 'pt-BR': 'PT',
-  };
-
-  const target = deeplTargetMap[targetLang] || targetLang.toUpperCase();
-
-  const params = new URLSearchParams();
-  for (const text of texts) {
-    params.append('text', text);
-  }
-  params.append('target_lang', target);
-
-  if (sourceLang !== 'auto') {
-    const source = deeplSourceMap[sourceLang] || sourceLang.toUpperCase();
-    params.append('source_lang', source);
-  }
-
-  const response = await fetch(baseUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Authorization': `DeepL-Auth-Key ${apiKey}`,
-    },
-    body: params.toString(),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`DeepL API error: ${err || response.statusText}`);
-  }
-
-  const data = await response.json();
-  return data.translations.map((t: any) => t.text);
-}
-
 async function translate(
   entries: TextEntry[],
   sourceLang: string,
@@ -690,12 +672,13 @@ async function translate(
   if (provider === 'deepl') {
     const isFree = model === 'deepl-free';
     const texts = entries.map(e => e.text);
-    const translated = await callDeepL(texts, sourceLang, targetLang, apiKey, isFree);
+    const translated = await callDeepLViaSandbox(texts, sourceLang, targetLang, apiKey, isFree);
 
     return entries.map((e, i) => ({
       nodeId: e.nodeId,
       original: e.text,
       translated: translated[i] || e.text,
+      targetLang,
     }));
   }
 
@@ -719,6 +702,7 @@ async function translate(
     nodeId: e.nodeId,
     original: e.text,
     translated: translations[i] || e.text,
+    targetLang,
   }));
 }
 
@@ -743,6 +727,28 @@ btnTranslate.addEventListener('click', async () => {
 
   if (needsApiKey(model) && !apiKey) {
     parent.postMessage({ pluginMessage: { type: 'notify', message: 'Please enter an API key for this model.' } }, '*');
+    return;
+  }
+
+  if (model === 'deepl-free' && !apiKey.endsWith(':fx')) {
+    parent.postMessage({
+      pluginMessage: {
+        type: 'notify',
+        message: 'DeepL Free keys usually end with :fx. This looks like a Pro key or an invalid key.',
+        timeout: 5000,
+      },
+    }, '*');
+    return;
+  }
+
+  if (model === 'deepl-pro' && apiKey.endsWith(':fx')) {
+    parent.postMessage({
+      pluginMessage: {
+        type: 'notify',
+        message: 'This looks like a DeepL Free key (:fx). Select DeepL Free instead of DeepL Pro.',
+        timeout: 5000,
+      },
+    }, '*');
     return;
   }
 
@@ -821,6 +827,19 @@ window.onmessage = (event) => {
     return;
   }
 
+  if (msg.type === 'deepl-result') {
+    const cb = deeplCallbacks.get(msg.requestId);
+    if (cb) {
+      deeplCallbacks.delete(msg.requestId);
+      if (msg.error) {
+        cb.reject(new Error(msg.error));
+      } else {
+        cb.resolve(msg.translations || []);
+      }
+    }
+    return;
+  }
+
   if (msg.type === 'selection-result' || msg.type === 'selection-changed') {
     currentEntries = msg.entries || [];
     const count = msg.count || 0;
@@ -844,6 +863,16 @@ window.onmessage = (event) => {
     var doneMsg = 'Done! ' + msg.applied + ' translated';
     if (msg.failed > 0) {
       doneMsg += ', ' + msg.failed + ' failed';
+      if (msg.errorSummary) {
+        doneMsg += `\n${msg.errorSummary}`;
+        parent.postMessage({
+          pluginMessage: {
+            type: 'notify',
+            message: `Apply failed: ${msg.errorSummary}`,
+            timeout: 7000,
+          },
+        }, '*');
+      }
     }
     progressText.textContent = doneMsg;
 
