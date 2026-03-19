@@ -25,6 +25,34 @@
       <button id="btn-refresh" class="btn-secondary btn-sm">Refresh Selection</button>
     </section>
 
+    <!-- Mode Selection -->
+    <section class="section">
+      <label class="label">Mode</label>
+      <div class="radio-group">
+        <label class="radio-option">
+          <input type="radio" name="feature-mode" value="translate" checked />
+          <div class="radio-content">
+            <strong>Translate</strong>
+            <span class="radio-desc">Translate selected text layers</span>
+          </div>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="feature-mode" value="transform" />
+          <div class="radio-content">
+            <strong>Text Transform</strong>
+            <span class="radio-desc">Apply one instruction across selected text layers</span>
+          </div>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="feature-mode" value="slide-notes" />
+          <div class="radio-content">
+            <strong>Slide Notes Draft</strong>
+            <span class="radio-desc">Generate speaker-note drafts from selected slides</span>
+          </div>
+        </label>
+      </div>
+    </section>
+
     <!-- Model Selection -->
     <section class="section">
       <label class="label">AI Model</label>
@@ -74,8 +102,8 @@
       </div>
     </section>
 
-    <!-- Language Selection -->
-    <section class="section">
+    <!-- Translation Language Selection -->
+    <section class="section" id="translation-language-section">
       <label class="label">Languages</label>
       <div class="lang-row">
         <div class="lang-field">
@@ -96,8 +124,108 @@
       </div>
     </section>
 
+    <!-- Notes Draft Settings -->
+    <section class="section hidden" id="transform-settings-section">
+      <label class="label">Transform Instruction</label>
+      <textarea id="transform-instruction" class="textarea" rows="4" placeholder="e.g. Remove all '(Draft)' labels.&#10;Change tone to concise formal Korean.&#10;Replace 'client' with 'partner' everywhere."></textarea>
+      <div class="template-chips" id="transform-chips">
+        <button class="chip" data-transform="remove-brand">Remove '(Draft)' / '(Internal)' labels</button>
+        <button class="chip" data-transform="formal-ko">Change to formal Korean tone</button>
+        <button class="chip" data-transform="shorten">Shorten for presentation slides</button>
+        <button class="chip" data-transform="replace-user">Replace '고객' with '사용자'</button>
+      </div>
+      <p class="help-text">This rewrites the selected text layers in place. Use GPT, Claude, or Gemini for best results.</p>
+    </section>
+
+    <!-- Notes Draft Settings -->
+    <section class="section hidden" id="notes-settings-section">
+      <label class="label">Notes Draft Languages</label>
+      <div class="radio-group compact-group">
+        <label class="radio-option compact-option">
+          <input type="radio" name="notes-language-mode" value="bilingual" checked />
+          <div class="radio-content">
+            <strong>Bilingual</strong>
+            <span class="radio-desc">Two-language draft, default Korean + English</span>
+          </div>
+        </label>
+        <label class="radio-option compact-option">
+          <input type="radio" name="notes-language-mode" value="single" />
+          <div class="radio-content">
+            <strong>Single Language</strong>
+            <span class="radio-desc">Draft in one language only</span>
+          </div>
+        </label>
+      </div>
+
+      <div class="lang-row notes-lang-row">
+        <div class="lang-field">
+          <label class="sub-label">Primary</label>
+          <div class="searchable-select" id="notes-primary-lang-wrapper">
+            <input id="notes-primary-lang-input" class="input" placeholder="Primary language..." />
+            <div class="dropdown-list" id="notes-primary-lang-dropdown"></div>
+          </div>
+        </div>
+        <div class="lang-field" id="notes-secondary-lang-field">
+          <label class="sub-label">Secondary</label>
+          <div class="searchable-select" id="notes-secondary-lang-wrapper">
+            <input id="notes-secondary-lang-input" class="input" placeholder="Secondary language..." />
+            <div class="dropdown-list" id="notes-secondary-lang-dropdown"></div>
+          </div>
+        </div>
+      </div>
+      <label class="sub-label">Draft Style</label>
+      <div class="radio-group compact-group" id="notes-style-group">
+        <label class="radio-option compact-option">
+          <input type="radio" name="notes-style" value="speaker" checked />
+          <div class="radio-content">
+            <strong>Speaker Script</strong>
+            <span class="radio-desc">Natural presenter narration</span>
+          </div>
+        </label>
+        <label class="radio-option compact-option">
+          <input type="radio" name="notes-style" value="executive" />
+          <div class="radio-content">
+            <strong>Executive</strong>
+            <span class="radio-desc">Short and polished summary</span>
+          </div>
+        </label>
+        <label class="radio-option compact-option">
+          <input type="radio" name="notes-style" value="detailed" />
+          <div class="radio-content">
+            <strong>Detailed</strong>
+            <span class="radio-desc">More context for the presenter</span>
+          </div>
+        </label>
+      </div>
+      <label class="sub-label">Draft Length</label>
+      <div class="radio-group compact-group" id="notes-length-group">
+        <label class="radio-option compact-option">
+          <input type="radio" name="notes-length" value="short" checked />
+          <div class="radio-content">
+            <strong>Short</strong>
+            <span class="radio-desc">2-4 lines per slide</span>
+          </div>
+        </label>
+        <label class="radio-option compact-option">
+          <input type="radio" name="notes-length" value="medium" />
+          <div class="radio-content">
+            <strong>Medium</strong>
+            <span class="radio-desc">4-7 lines per slide</span>
+          </div>
+        </label>
+        <label class="radio-option compact-option">
+          <input type="radio" name="notes-length" value="long" />
+          <div class="radio-content">
+            <strong>Long</strong>
+            <span class="radio-desc">More complete talk track</span>
+          </div>
+        </label>
+      </div>
+      <p class="help-text">Direct write to the Slides presenter-notes field is not exposed in the current plugin API, so drafts are generated here for quick copy/paste.</p>
+    </section>
+
     <!-- Output Mode -->
-    <section class="section">
+    <section class="section" id="translation-output-section">
       <label class="label">Output Mode</label>
       <div class="radio-group">
         <label class="radio-option">
@@ -181,6 +309,16 @@
         <div id="progress-fill" class="progress-fill"></div>
       </div>
       <div id="progress-text" class="progress-text hidden"></div>
+    </section>
+
+    <!-- Notes Draft Output -->
+    <section class="section hidden" id="notes-output-section">
+      <div class="section-header">
+        <label class="label">Generated Drafts</label>
+        <button id="btn-copy-notes" class="btn-secondary btn-sm">Copy All</button>
+      </div>
+      <div id="notes-output-empty" class="empty-state">Generate drafts for selected slides to preview them here.</div>
+      <div id="notes-output-list" class="notes-output-list"></div>
     </section>
   </main>
 

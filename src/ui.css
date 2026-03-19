@@ -343,6 +343,10 @@ body {
   gap: 4px;
 }
 
+.compact-group {
+  gap: 2px;
+}
+
 .radio-option {
   display: flex;
   align-items: flex-start;
@@ -380,6 +384,18 @@ body {
 .sub-options {
   margin-top: 8px;
   padding-left: 24px;
+}
+
+.notes-lang-row {
+  align-items: stretch;
+  margin-top: 6px;
+}
+
+.help-text {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
 }
 
 /* ─── Template Chips ───────────────────────────────────────────── */
@@ -450,6 +466,7 @@ body {
   color: var(--text-secondary);
   text-align: center;
   margin-top: 4px;
+  white-space: pre-wrap;
 }
 
 .spinner {
@@ -542,6 +559,60 @@ body {
   font-size: 11px;
   color: var(--text-secondary);
   font-style: italic;
+}
+
+.empty-state {
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.notes-output-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.notes-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+.notes-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.notes-card-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.notes-card-meta {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.notes-card-body {
+  padding: 10px;
+}
+
+.notes-card-body pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text);
 }
 
 /* ─── Utility ──────────────────────────────────────────────────── */

@@ -1,7 +1,7 @@
 // jip Translator - Figma Plugin (Sandbox Code)
 // This runs in Figma's sandbox environment
 
-figma.showUI(__html__, { width: 480, height: 640, themeColors: true });
+figma.showUI(__html__, { width: 480, height: 760, themeColors: true });
 
 // ─── Types ──────────────────────────────────────────────────────────────
 interface TextEntry {
@@ -17,6 +17,13 @@ interface TranslatedResult {
   original: string;
   translated: string;
   targetLang?: string;
+}
+
+interface SlideDraftTarget {
+  slideId: string;
+  slideName: string;
+  slideIndex: number;
+  text: string;
 }
 
 let cachedAvailableFonts: Font[] | null = null;
@@ -110,6 +117,52 @@ function getTextEntries(selection: readonly SceneNode[]): TextEntry[] {
   }
 
   return entries;
+}
+
+function findAncestorSlide(node: BaseNode | null): SlideNode | null {
+  let current: BaseNode | null = node;
+  while (current) {
+    if (current.type === 'SLIDE') {
+      return current as SlideNode;
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
+function getSlideDraftTargets(selection: readonly SceneNode[]): SlideDraftTarget[] {
+  const slides: SlideNode[] = [];
+  const seen = new Set<string>();
+
+  for (const node of selection) {
+    const slide = node.type === 'SLIDE'
+      ? node as SlideNode
+      : findAncestorSlide(node);
+
+    if (slide && !seen.has(slide.id)) {
+      seen.add(slide.id);
+      slides.push(slide);
+    }
+  }
+
+  return slides.map((slide, index) => {
+    const textNodes = collectTextNodes(slide)
+      .filter((textNode) => textNode.characters.trim() !== '');
+
+    textNodes.sort((a, b) => {
+      const ay = a.absoluteTransform[1][2];
+      const by = b.absoluteTransform[1][2];
+      if (Math.abs(ay - by) > 5) return ay - by;
+      return a.absoluteTransform[0][2] - b.absoluteTransform[0][2];
+    });
+
+    return {
+      slideId: slide.id,
+      slideName: slide.name || `Slide ${index + 1}`,
+      slideIndex: index,
+      text: textNodes.map((textNode) => textNode.characters).join('\n\n'),
+    };
+  });
 }
 
 // ─── Font Loading ───────────────────────────────────────────────────────
@@ -449,6 +502,27 @@ figma.ui.onmessage = async (msg: any) => {
       });
     }
 
+    if (msg.type === 'get-slide-draft-targets') {
+      if (figma.editorType !== 'slides') {
+        figma.ui.postMessage({
+          type: 'slide-draft-selection-result',
+          count: 0,
+          targets: [],
+          error: 'Slide notes draft mode is available in Figma Slides only.',
+        });
+        return;
+      }
+
+      const selection = figma.currentPage.selection;
+      const targets = getSlideDraftTargets(selection);
+      figma.ui.postMessage({
+        type: 'slide-draft-selection-result',
+        count: targets.length,
+        targets,
+        slideCount: targets.length,
+      });
+    }
+
     if (msg.type === 'apply-translations') {
       const results: TranslatedResult[] = msg.results;
       const outputMode: string = msg.outputMode;
@@ -564,6 +638,16 @@ figma.on('selectionchange', () => {
       entries,
       frameCount: selection.length,
     });
+
+    if (figma.editorType === 'slides') {
+      const targets = selection.length > 0 ? getSlideDraftTargets(selection) : [];
+      figma.ui.postMessage({
+        type: 'slide-draft-selection-changed',
+        count: targets.length,
+        targets,
+        slideCount: targets.length,
+      });
+    }
   } catch (err: any) {
     console.error('Selection change error:', err);
   }

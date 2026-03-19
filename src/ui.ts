@@ -17,9 +17,29 @@ interface TranslatedResult {
   targetLang?: string;
 }
 
+interface SlideDraftTarget {
+  slideId: string;
+  slideName: string;
+  slideIndex: number;
+  text: string;
+}
+
+interface SlideDraftResult {
+  slideId: string;
+  slideName: string;
+  slideIndex: number;
+  primaryLang: string;
+  primaryDraft: string;
+  secondaryLang?: string;
+  secondaryDraft?: string;
+}
+
 // ─── State ──────────────────────────────────────────────────────────────
 let currentEntries: TextEntry[] = [];
+let currentSlideDraftTargets: SlideDraftTarget[] = [];
+let currentSlideDraftResults: SlideDraftResult[] = [];
 let isTranslating = false;
+let currentMode: 'translate' | 'transform' | 'slide-notes' = 'translate';
 
 // ─── Storage Helper (via Figma clientStorage) ───────────────────────────
 // Figma plugin iframes can't use localStorage reliably.
@@ -137,6 +157,13 @@ const TEMPLATES: Record<string, string> = {
 - Use established technical terminology in the target language`,
 };
 
+const TRANSFORM_TEMPLATES: Record<string, string> = {
+  'remove-brand': `Remove labels like '(Draft)' and '(Internal)' wherever they appear. Keep the remaining text unchanged unless a minor grammar fix is needed.`,
+  'formal-ko': `Rewrite all selected text in formal Korean using a clear and professional 합니다체 tone.`,
+  shorten: `Shorten the selected text for presentation slides. Remove redundancy, keep the core meaning, and make each line concise and punchy.`,
+  'replace-user': `Replace every occurrence of '고객' with '사용자'. Keep everything else unchanged unless needed for grammar.`,
+};
+
 // ─── DOM References ─────────────────────────────────────────────────────
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -146,10 +173,26 @@ const apiKeyInput = $('api-key') as HTMLInputElement;
 const btnToggleKey = $('btn-toggle-key');
 const btnSaveKey = $('btn-save-key');
 
+const translationLanguageSection = $('translation-language-section');
+const transformSettingsSection = $('transform-settings-section');
+const notesSettingsSection = $('notes-settings-section');
+const translationOutputSection = $('translation-output-section');
+const notesOutputSection = $('notes-output-section');
+const btnCopyNotes = $('btn-copy-notes');
+const notesOutputEmpty = $('notes-output-empty');
+const notesOutputList = $('notes-output-list');
+
 const sourceLangInput = $('source-lang-input') as HTMLInputElement;
 const sourceLangDropdown = $('source-lang-dropdown');
 const targetLangInput = $('target-lang-input') as HTMLInputElement;
 const targetLangDropdown = $('target-lang-dropdown');
+const notesPrimaryLangInput = $('notes-primary-lang-input') as HTMLInputElement;
+const notesPrimaryLangDropdown = $('notes-primary-lang-dropdown');
+const notesSecondaryLangInput = $('notes-secondary-lang-input') as HTMLInputElement;
+const notesSecondaryLangDropdown = $('notes-secondary-lang-dropdown');
+const notesSecondaryLangField = $('notes-secondary-lang-field');
+const transformInstruction = $('transform-instruction') as HTMLTextAreaElement;
+const transformChips = $('transform-chips');
 
 const btnRefresh = $('btn-refresh');
 const btnTranslate = $('btn-translate') as HTMLButtonElement;
@@ -204,14 +247,21 @@ function getStorageKeyName(model: string): string {
 async function init() {
   // Request initial selection
   parent.postMessage({ pluginMessage: { type: 'get-selection' } }, '*');
+  parent.postMessage({ pluginMessage: { type: 'get-slide-draft-targets' } }, '*');
 
   // Source lang default
   sourceLangInput.value = 'Auto-detect';
   sourceLangInput.dataset.code = 'auto';
+  notesPrimaryLangInput.value = '한국어 (Korean)';
+  notesPrimaryLangInput.dataset.code = 'ko';
+  notesSecondaryLangInput.value = 'English (English)';
+  notesSecondaryLangInput.dataset.code = 'en';
 
   // Setup dropdowns first (no async needed)
   setupSearchableDropdown(sourceLangInput, sourceLangDropdown, LANGUAGES);
   setupSearchableDropdown(targetLangInput, targetLangDropdown, LANGUAGES.filter(l => l.code !== 'auto'));
+  setupSearchableDropdown(notesPrimaryLangInput, notesPrimaryLangDropdown, LANGUAGES.filter(l => l.code !== 'auto'));
+  setupSearchableDropdown(notesSecondaryLangInput, notesSecondaryLangDropdown, LANGUAGES.filter(l => l.code !== 'auto'));
 
   // Load saved preferences via clientStorage
   const savedModel = await storageGetAsync('jip-translator-model');
@@ -229,6 +279,7 @@ async function init() {
   }
 
   updateApiKeyVisibility();
+  updateModeUI();
   await loadSavedApiKey();
 }
 
@@ -421,7 +472,153 @@ function setupSearchableDropdown(
   hideDropdown();
 }
 
+function getSelectedFeatureMode(): 'translate' | 'transform' | 'slide-notes' {
+  return (document.querySelector('input[name="feature-mode"]:checked') as HTMLInputElement)?.value as 'translate' | 'transform' | 'slide-notes' || 'translate';
+}
+
+function getSelectedNotesLanguageMode(): 'single' | 'bilingual' {
+  return (document.querySelector('input[name="notes-language-mode"]:checked') as HTMLInputElement)?.value as 'single' | 'bilingual' || 'bilingual';
+}
+
+function getSelectedNotesStyle(): 'speaker' | 'executive' | 'detailed' {
+  return (document.querySelector('input[name="notes-style"]:checked') as HTMLInputElement)?.value as 'speaker' | 'executive' | 'detailed' || 'speaker';
+}
+
+function getSelectedNotesLength(): 'short' | 'medium' | 'long' {
+  return (document.querySelector('input[name="notes-length"]:checked') as HTMLInputElement)?.value as 'short' | 'medium' | 'long' || 'short';
+}
+
+function updateSelectionStatus() {
+  if (currentMode === 'slide-notes') {
+    const count = currentSlideDraftTargets.length;
+    if (count > 0) {
+      selectionText.textContent = `${count} slide(s) ready for notes draft`;
+      selectionStatus.classList.add('ready');
+      selectionStatus.querySelector('.status-icon')!.textContent = '\u2705';
+      btnTranslate.disabled = false;
+    } else {
+      selectionText.textContent = 'Select one or more slides in Figma Slides';
+      selectionStatus.classList.remove('ready');
+      selectionStatus.querySelector('.status-icon')!.textContent = '\u2610';
+      btnTranslate.disabled = true;
+    }
+    return;
+  }
+
+  const count = currentEntries.length;
+  const frameCount = new Set(currentEntries.map((entry) => entry.frameIndex)).size;
+  if (count > 0) {
+    selectionText.textContent = `${count} text(s) found in ${frameCount} frame(s)`;
+    selectionStatus.classList.add('ready');
+    selectionStatus.querySelector('.status-icon')!.textContent = '\u2705';
+    btnTranslate.disabled = false;
+  } else {
+    selectionText.textContent = 'No text found in selection';
+    selectionStatus.classList.remove('ready');
+    selectionStatus.querySelector('.status-icon')!.textContent = '\u2610';
+    btnTranslate.disabled = true;
+  }
+}
+
+function updateModeUI() {
+  currentMode = getSelectedFeatureMode();
+
+  const notesMode = currentMode === 'slide-notes';
+  const transformMode = currentMode === 'transform';
+  translationLanguageSection.classList.toggle('hidden', notesMode || transformMode);
+  transformSettingsSection.classList.toggle('hidden', !transformMode);
+  translationOutputSection.classList.toggle('hidden', notesMode);
+  notesSettingsSection.classList.toggle('hidden', !notesMode);
+  notesOutputSection.classList.toggle('hidden', !notesMode);
+  notesSecondaryLangField.classList.toggle('hidden', getSelectedNotesLanguageMode() === 'single');
+  btnTranslateText.textContent = notesMode ? 'Generate Notes Draft' : (transformMode ? 'Apply Transform' : 'Translate');
+
+  if (!notesMode) {
+    progressText.textContent = '';
+  }
+
+  if (notesMode && currentSlideDraftResults.length === 0) {
+    renderSlideDraftResults();
+  }
+
+  updateSelectionStatus();
+}
+
+function formatDraftForCopy(result: SlideDraftResult): string {
+  const lines = [`[${result.slideName}]`];
+  const primaryLabel = LANGUAGES.find((lang) => lang.code === result.primaryLang)?.name || result.primaryLang;
+  lines.push(`${primaryLabel}\n${result.primaryDraft}`);
+
+  if (result.secondaryLang && result.secondaryDraft) {
+    const secondaryLabel = LANGUAGES.find((lang) => lang.code === result.secondaryLang)?.name || result.secondaryLang;
+    lines.push(`${secondaryLabel}\n${result.secondaryDraft}`);
+  }
+
+  return lines.join('\n\n');
+}
+
+function renderSlideDraftResults() {
+  notesOutputList.innerHTML = '';
+  notesOutputEmpty.classList.toggle('hidden', currentSlideDraftResults.length > 0);
+
+  for (const result of currentSlideDraftResults) {
+    const card = document.createElement('div');
+    card.className = 'notes-card';
+
+    const header = document.createElement('div');
+    header.className = 'notes-card-header';
+
+    const titleWrap = document.createElement('div');
+    const title = document.createElement('div');
+    title.className = 'notes-card-title';
+    title.textContent = result.slideName;
+    const meta = document.createElement('div');
+    meta.className = 'notes-card-meta';
+    meta.textContent = result.secondaryLang ? `${result.primaryLang} / ${result.secondaryLang}` : result.primaryLang;
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(meta);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'btn-secondary btn-sm';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(formatDraftForCopy(result));
+      parent.postMessage({ pluginMessage: { type: 'notify', message: `${result.slideName} draft copied.` } }, '*');
+    });
+
+    header.appendChild(titleWrap);
+    header.appendChild(copyBtn);
+
+    const body = document.createElement('div');
+    body.className = 'notes-card-body';
+    const content = document.createElement('pre');
+    content.textContent = formatDraftForCopy(result);
+    body.appendChild(content);
+
+    card.appendChild(header);
+    card.appendChild(body);
+    notesOutputList.appendChild(card);
+  }
+}
+
 // ─── Output Mode ────────────────────────────────────────────────────────
+
+document.querySelectorAll('input[name="feature-mode"]').forEach(radio => {
+  radio.addEventListener('change', () => {
+    updateModeUI();
+    if (currentMode === 'slide-notes') {
+      parent.postMessage({ pluginMessage: { type: 'get-slide-draft-targets' } }, '*');
+    } else {
+      parent.postMessage({ pluginMessage: { type: 'get-selection' } }, '*');
+    }
+  });
+});
+
+document.querySelectorAll('input[name="notes-language-mode"]').forEach(radio => {
+  radio.addEventListener('change', () => {
+    notesSecondaryLangField.classList.toggle('hidden', getSelectedNotesLanguageMode() === 'single');
+  });
+});
 
 document.querySelectorAll('input[name="output-mode"]').forEach(radio => {
   radio.addEventListener('change', (e) => {
@@ -458,6 +655,23 @@ templateChips.addEventListener('click', (e) => {
   templateChips.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
   target.classList.add('active');
   guidelineTextarea.value = TEMPLATES[template] || '';
+});
+
+transformChips.addEventListener('click', (e) => {
+  const target = e.target as HTMLElement;
+  if (!target.classList.contains('chip')) return;
+
+  const template = target.dataset.transform!;
+
+  if (target.classList.contains('active')) {
+    target.classList.remove('active');
+    transformInstruction.value = '';
+    return;
+  }
+
+  transformChips.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+  target.classList.add('active');
+  transformInstruction.value = TRANSFORM_TEMPLATES[template] || '';
 });
 
 // MD file upload
@@ -504,7 +718,15 @@ btnCloseAbout.addEventListener('click', () => aboutView.classList.add('hidden'))
 // ─── Selection Refresh ─────────────────────────────────────────────────
 
 btnRefresh.addEventListener('click', () => {
-  parent.postMessage({ pluginMessage: { type: 'get-selection' } }, '*');
+  const type = currentMode === 'slide-notes' ? 'get-slide-draft-targets' : 'get-selection';
+  parent.postMessage({ pluginMessage: { type } }, '*');
+});
+
+btnCopyNotes.addEventListener('click', async () => {
+  if (currentSlideDraftResults.length === 0) return;
+  const text = currentSlideDraftResults.map(formatDraftForCopy).join('\n\n--------------------\n\n');
+  await navigator.clipboard.writeText(text);
+  parent.postMessage({ pluginMessage: { type: 'notify', message: 'All note drafts copied.' } }, '*');
 });
 
 // ─── Translation API Calls ──────────────────────────────────────────────
@@ -566,6 +788,156 @@ function parseTranslationResponse(response: string, count: number): string[] {
 
     const text = response.substring(contentStart, end === -1 ? undefined : end).trim();
     results.push(text);
+  }
+
+  return results;
+}
+
+function buildTransformPrompt(entries: TextEntry[], instruction: string, guideline: string): string {
+  const textsBlock = entries
+    .map((entry, index) => `[TEXT_${index}]\n${entry.text}`)
+    .join('\n\n');
+
+  return `You are editing text content from a Figma document.
+
+Apply the user's instruction to each selected text item.
+
+USER INSTRUCTION:
+${instruction}
+
+IMPORTANT INSTRUCTIONS:
+- Read all selected texts first to understand context and terminology.
+- Apply the instruction consistently across all texts.
+- Preserve line breaks, bullets, numbering, placeholders, URLs, and formatting markers unless the instruction explicitly asks to change them.
+- If a text item does not need any change, return it unchanged.
+- Return ONLY the edited texts in the exact same order and marker format.
+
+${guideline ? `ADDITIONAL GUIDELINES:\n${guideline}\n` : ''}Selected texts:
+
+${textsBlock}
+
+Return format:
+[TEXT_0]
+edited text here
+
+[TEXT_1]
+edited text here`;
+}
+
+function buildSlideDraftPrompt(
+  targets: SlideDraftTarget[],
+  primaryLang: string,
+  secondaryLang: string | null,
+  style: 'speaker' | 'executive' | 'detailed',
+  length: 'short' | 'medium' | 'long',
+  guideline: string,
+): string {
+  const primaryLabel = LANGUAGES.find((lang) => lang.code === primaryLang)?.name || primaryLang;
+  const secondaryLabel = secondaryLang
+    ? (LANGUAGES.find((lang) => lang.code === secondaryLang)?.name || secondaryLang)
+    : null;
+
+  const slidesBlock = targets.map((target, index) => {
+    const content = target.text.trim() || '(No visible text on slide)';
+    return `[SLIDE_${index}]
+TITLE: ${target.slideName}
+CONTENT:
+${content}`;
+  }).join('\n\n');
+
+  const bilingualInstruction = secondaryLabel
+    ? `For each slide, write two concise speaker-note drafts: first in ${primaryLabel}, then in ${secondaryLabel}.`
+    : `For each slide, write one concise speaker-note draft in ${primaryLabel}.`;
+
+  const styleInstruction = style === 'executive'
+    ? 'Use a polished executive tone. Prioritize clarity, confidence, and brevity.'
+    : style === 'detailed'
+      ? 'Write a more complete talk track with helpful connective phrasing and implied context from the slide.'
+      : 'Write like a natural presenter speaking through the slide.';
+
+  const lengthInstruction = length === 'long'
+    ? 'Aim for roughly 6-10 spoken lines per slide.'
+    : length === 'medium'
+      ? 'Aim for roughly 4-7 spoken lines per slide.'
+      : 'Aim for roughly 2-4 spoken lines per slide.';
+
+  const returnFormat = secondaryLabel
+    ? `[SLIDE_0]
+<PRIMARY>
+draft in ${primaryLabel}
+</PRIMARY>
+<SECONDARY>
+draft in ${secondaryLabel}
+</SECONDARY>`
+    : `[SLIDE_0]
+<PRIMARY>
+draft in ${primaryLabel}
+</PRIMARY>`;
+
+  return `You are helping prepare speaker notes for a presentation in Figma Slides.
+
+Read the content of each selected slide and write a presenter-friendly draft that helps the speaker explain the slide naturally.
+
+IMPORTANT INSTRUCTIONS:
+- Treat each slide independently.
+- Infer the likely intent and narrative of the slide from its visible text.
+- Keep the notes concise, natural, and easy to speak out loud.
+- Expand bullet points into a spoken explanation, but do not invent facts that are not reasonably implied by the slide.
+- If a slide has very little text, write a short supporting script rather than repeating the slide verbatim.
+- Preserve key terms, product names, and numbers when needed.
+- ${styleInstruction}
+- ${lengthInstruction}
+- ${bilingualInstruction}
+- Return ONLY the results in the exact marker format below.
+
+${guideline ? `ADDITIONAL GUIDELINES:\n${guideline}\n` : ''}Selected slides:
+
+${slidesBlock}
+
+Return format:
+${returnFormat}
+
+Repeat that structure for every slide marker in order.`;
+}
+
+function extractTaggedSection(block: string, tag: 'PRIMARY' | 'SECONDARY'): string {
+  const startTag = `<${tag}>`;
+  const endTag = `</${tag}>`;
+  const start = block.indexOf(startTag);
+  const end = block.indexOf(endTag);
+  if (start === -1 || end === -1 || end <= start) return '';
+  return block.slice(start + startTag.length, end).trim();
+}
+
+function parseSlideDraftResponse(
+  response: string,
+  targets: SlideDraftTarget[],
+  primaryLang: string,
+  secondaryLang: string | null,
+): SlideDraftResult[] {
+  const results: SlideDraftResult[] = [];
+
+  for (let i = 0; i < targets.length; i++) {
+    const marker = `[SLIDE_${i}]`;
+    const nextMarker = `[SLIDE_${i + 1}]`;
+    const start = response.indexOf(marker);
+    const end = i < targets.length - 1 ? response.indexOf(nextMarker, start + marker.length) : response.length;
+    const block = start === -1
+      ? ''
+      : response.substring(start + marker.length, end === -1 ? undefined : end).trim();
+
+    const primaryDraft = extractTaggedSection(block, 'PRIMARY') || block;
+    const parsedSecondary = secondaryLang ? extractTaggedSection(block, 'SECONDARY') : '';
+
+    results.push({
+      slideId: targets[i].slideId,
+      slideName: targets[i].slideName,
+      slideIndex: targets[i].slideIndex,
+      primaryLang,
+      primaryDraft: primaryDraft || 'No draft returned.',
+      secondaryLang: secondaryLang || undefined,
+      secondaryDraft: secondaryLang ? (parsedSecondary || 'No secondary draft returned.') : undefined,
+    });
   }
 
   return results;
@@ -659,6 +1031,20 @@ async function callGemini(prompt: string, apiKey: string, model: string): Promis
   return data.candidates[0].content.parts[0].text;
 }
 
+async function callModelPrompt(prompt: string, apiKey: string, model: string): Promise<string> {
+  const provider = getProvider(model);
+  if (provider === 'openai') {
+    return callOpenAI(prompt, apiKey, model);
+  }
+  if (provider === 'anthropic') {
+    return callAnthropic(prompt, apiKey, model);
+  }
+  if (provider === 'google') {
+    return callGemini(prompt, apiKey, model);
+  }
+  throw new Error('This mode requires an AI text model, not DeepL.');
+}
+
 async function translate(
   entries: TextEntry[],
   sourceLang: string,
@@ -685,16 +1071,7 @@ async function translate(
   // AI-based translation (batch all texts in one prompt for context)
   const prompt = buildContextPrompt(entries, sourceLang, targetLang, guideline);
 
-  let response: string;
-  if (provider === 'openai') {
-    response = await callOpenAI(prompt, apiKey, model);
-  } else if (provider === 'anthropic') {
-    response = await callAnthropic(prompt, apiKey, model);
-  } else if (provider === 'google') {
-    response = await callGemini(prompt, apiKey, model);
-  } else {
-    throw new Error(`Unknown provider: ${provider}`);
-  }
+  const response = await callModelPrompt(prompt, apiKey, model);
 
   const translations = parseTranslationResponse(response, entries.length);
 
@@ -706,10 +1083,43 @@ async function translate(
   }));
 }
 
+async function transformTextEntries(
+  entries: TextEntry[],
+  instruction: string,
+  model: string,
+  apiKey: string,
+  guideline: string,
+): Promise<TranslatedResult[]> {
+  const prompt = buildTransformPrompt(entries, instruction, guideline);
+  const response = await callModelPrompt(prompt, apiKey, model);
+  const transformed = parseTranslationResponse(response, entries.length);
+
+  return entries.map((entry, index) => ({
+    nodeId: entry.nodeId,
+    original: entry.text,
+    translated: transformed[index] || entry.text,
+  }));
+}
+
+async function generateSlideDrafts(
+  targets: SlideDraftTarget[],
+  primaryLang: string,
+  secondaryLang: string | null,
+  style: 'speaker' | 'executive' | 'detailed',
+  length: 'short' | 'medium' | 'long',
+  model: string,
+  apiKey: string,
+  guideline: string,
+): Promise<SlideDraftResult[]> {
+  const prompt = buildSlideDraftPrompt(targets, primaryLang, secondaryLang, style, length, guideline);
+  const response = await callModelPrompt(prompt, apiKey, model);
+  return parseSlideDraftResponse(response, targets, primaryLang, secondaryLang);
+}
+
 // ─── Translate Button Handler ───────────────────────────────────────────
 
 btnTranslate.addEventListener('click', async () => {
-  if (isTranslating || currentEntries.length === 0) return;
+  if (isTranslating) return;
 
   const model = modelSelect.value;
   const apiKey = apiKeyInput.value.trim();
@@ -718,10 +1128,37 @@ btnTranslate.addEventListener('click', async () => {
   const guideline = guidelineTextarea.value.trim();
   const outputMode = (document.querySelector('input[name="output-mode"]:checked') as HTMLInputElement)?.value || 'replace';
   const dupLayout = layoutDirection.value;
+  const notesLanguageMode = getSelectedNotesLanguageMode();
+  const notesPrimaryLang = notesPrimaryLangInput.dataset.code || '';
+  const notesSecondaryLang = notesLanguageMode === 'bilingual'
+    ? (notesSecondaryLangInput.dataset.code || '')
+    : '';
+  const notesStyle = getSelectedNotesStyle();
+  const notesLength = getSelectedNotesLength();
+  const transformCommand = transformInstruction.value.trim();
+
+  if (currentMode === 'translate' && currentEntries.length === 0) return;
+  if (currentMode === 'transform' && currentEntries.length === 0) return;
+  if (currentMode === 'slide-notes' && currentSlideDraftTargets.length === 0) return;
 
   // Validation
-  if (!targetLang) {
+  if (currentMode === 'translate' && !targetLang) {
     parent.postMessage({ pluginMessage: { type: 'notify', message: 'Please select a target language.' } }, '*');
+    return;
+  }
+
+  if (currentMode === 'slide-notes' && !notesPrimaryLang) {
+    parent.postMessage({ pluginMessage: { type: 'notify', message: 'Please select a primary draft language.' } }, '*');
+    return;
+  }
+
+  if (currentMode === 'slide-notes' && notesLanguageMode === 'bilingual' && !notesSecondaryLang) {
+    parent.postMessage({ pluginMessage: { type: 'notify', message: 'Please select a secondary draft language.' } }, '*');
+    return;
+  }
+
+  if (currentMode === 'transform' && !transformCommand) {
+    parent.postMessage({ pluginMessage: { type: 'notify', message: 'Please enter a transform instruction.' } }, '*');
     return;
   }
 
@@ -730,7 +1167,12 @@ btnTranslate.addEventListener('click', async () => {
     return;
   }
 
-  if (model === 'deepl-free' && !apiKey.endsWith(':fx')) {
+  if ((currentMode === 'slide-notes' || currentMode === 'transform') && getProvider(model) === 'deepl') {
+    parent.postMessage({ pluginMessage: { type: 'notify', message: `${currentMode === 'slide-notes' ? 'Slide notes draft' : 'Text transform'} mode requires GPT, Claude, or Gemini.` } }, '*');
+    return;
+  }
+
+  if (currentMode === 'translate' && model === 'deepl-free' && !apiKey.endsWith(':fx')) {
     parent.postMessage({
       pluginMessage: {
         type: 'notify',
@@ -741,7 +1183,7 @@ btnTranslate.addEventListener('click', async () => {
     return;
   }
 
-  if (model === 'deepl-pro' && apiKey.endsWith(':fx')) {
+  if (currentMode === 'translate' && model === 'deepl-pro' && apiKey.endsWith(':fx')) {
     parent.postMessage({
       pluginMessage: {
         type: 'notify',
@@ -760,14 +1202,98 @@ btnTranslate.addEventListener('click', async () => {
   // Start translation
   isTranslating = true;
   btnTranslate.disabled = true;
-  btnTranslateText.textContent = 'Translating...';
+  btnTranslateText.textContent = currentMode === 'slide-notes'
+    ? 'Generating...'
+    : (currentMode === 'transform' ? 'Applying...' : 'Translating...');
   btnTranslateSpinner.classList.remove('hidden');
   progressBar.classList.remove('hidden');
   progressText.classList.remove('hidden');
   progressFill.style.width = '10%';
-  progressText.textContent = 'Sending to AI...';
+  progressText.textContent = currentMode === 'slide-notes'
+    ? 'Analyzing selected slides...'
+    : (currentMode === 'transform' ? 'Preparing text transformation...' : 'Sending to AI...');
 
   try {
+    if (currentMode === 'transform') {
+      const CHUNK_SIZE = 30;
+      const allResults: TranslatedResult[] = [];
+      const totalChunks = Math.ceil(currentEntries.length / CHUNK_SIZE);
+
+      for (let i = 0; i < currentEntries.length; i += CHUNK_SIZE) {
+        const chunk = currentEntries.slice(i, i + CHUNK_SIZE);
+        const chunkIndex = Math.floor(i / CHUNK_SIZE);
+
+        const pct = 10 + (chunkIndex / totalChunks) * 60;
+        progressFill.style.width = `${pct}%`;
+        progressText.textContent = `Transforming batch ${chunkIndex + 1}/${totalChunks}...`;
+
+        const results = await transformTextEntries(chunk, transformCommand, model, apiKey, guideline);
+        allResults.push(...results);
+      }
+
+      progressFill.style.width = '80%';
+      progressText.textContent = 'Applying transformed text to Figma...';
+
+      parent.postMessage({
+        pluginMessage: {
+          type: 'apply-translations',
+          results: allResults,
+          entries: currentEntries,
+          outputMode: 'replace',
+          duplicateLayout: dupLayout,
+        },
+      }, '*');
+      return;
+    }
+
+    if (currentMode === 'slide-notes') {
+      const CHUNK_SIZE = 8;
+      const allDrafts: SlideDraftResult[] = [];
+      const totalChunks = Math.ceil(currentSlideDraftTargets.length / CHUNK_SIZE);
+
+      for (let i = 0; i < currentSlideDraftTargets.length; i += CHUNK_SIZE) {
+        const chunk = currentSlideDraftTargets.slice(i, i + CHUNK_SIZE);
+        const chunkIndex = Math.floor(i / CHUNK_SIZE);
+
+        const pct = 10 + (chunkIndex / totalChunks) * 70;
+        progressFill.style.width = `${pct}%`;
+        progressText.textContent = `Generating notes ${chunkIndex + 1}/${totalChunks}...`;
+
+        const results = await generateSlideDrafts(
+          chunk,
+          notesPrimaryLang,
+          notesLanguageMode === 'bilingual' ? notesSecondaryLang : null,
+          notesStyle,
+          notesLength,
+          model,
+          apiKey,
+          guideline,
+        );
+        allDrafts.push(...results);
+      }
+
+      currentSlideDraftResults = allDrafts;
+      renderSlideDraftResults();
+      progressFill.style.width = '100%';
+      progressText.textContent = `Done! ${allDrafts.length} slide draft(s) generated.`;
+      parent.postMessage({
+        pluginMessage: {
+          type: 'notify',
+          message: `${allDrafts.length} slide note draft(s) generated.`,
+        },
+      }, '*');
+
+      setTimeout(() => {
+        progressBar.classList.add('hidden');
+        progressFill.style.width = '0%';
+        isTranslating = false;
+        btnTranslate.disabled = currentSlideDraftTargets.length === 0;
+        btnTranslateText.textContent = 'Generate Notes Draft';
+        btnTranslateSpinner.classList.add('hidden');
+      }, 1200);
+      return;
+    }
+
     // For large batches, chunk into groups to avoid token limits
     const CHUNK_SIZE = 30;
     const allResults: TranslatedResult[] = [];
@@ -803,10 +1329,17 @@ btnTranslate.addEventListener('click', async () => {
     progressFill.style.width = '0%';
     progressBar.classList.add('hidden');
     progressText.textContent = `Error: ${err.message}`;
-    parent.postMessage({ pluginMessage: { type: 'notify', message: `Translation failed: ${err.message}` } }, '*');
+    const failureLabel = currentMode === 'slide-notes'
+      ? 'Notes draft failed'
+      : (currentMode === 'transform' ? 'Text transform failed' : 'Translation failed');
+    parent.postMessage({ pluginMessage: { type: 'notify', message: `${failureLabel}: ${err.message}` } }, '*');
     isTranslating = false;
-    btnTranslate.disabled = currentEntries.length === 0;
-    btnTranslateText.textContent = 'Translate';
+    btnTranslate.disabled = currentMode === 'slide-notes'
+      ? currentSlideDraftTargets.length === 0
+      : currentEntries.length === 0;
+    btnTranslateText.textContent = currentMode === 'slide-notes'
+      ? 'Generate Notes Draft'
+      : (currentMode === 'transform' ? 'Apply Transform' : 'Translate');
     btnTranslateSpinner.classList.add('hidden');
   }
 });
@@ -842,20 +1375,16 @@ window.onmessage = (event) => {
 
   if (msg.type === 'selection-result' || msg.type === 'selection-changed') {
     currentEntries = msg.entries || [];
-    const count = msg.count || 0;
-    const frameCount = msg.frameCount || 0;
+    updateSelectionStatus();
+    return;
+  }
 
-    if (count > 0) {
-      selectionText.textContent = `${count} text(s) found in ${frameCount} frame(s)`;
-      selectionStatus.classList.add('ready');
-      selectionStatus.querySelector('.status-icon')!.textContent = '\u2705';
-      btnTranslate.disabled = false;
-    } else {
-      selectionText.textContent = msg.error || 'No text found in selection';
-      selectionStatus.classList.remove('ready');
-      selectionStatus.querySelector('.status-icon')!.textContent = '\u2610';
-      btnTranslate.disabled = true;
-    }
+  if (msg.type === 'slide-draft-selection-result' || msg.type === 'slide-draft-selection-changed') {
+    currentSlideDraftTargets = msg.targets || [];
+    currentSlideDraftResults = [];
+    renderSlideDraftResults();
+    updateSelectionStatus();
+    return;
   }
 
   if (msg.type === 'apply-complete') {
@@ -886,7 +1415,9 @@ window.onmessage = (event) => {
       progressFill.style.width = '0%';
       isTranslating = false;
       btnTranslate.disabled = currentEntries.length === 0;
-      btnTranslateText.textContent = 'Translate';
+      btnTranslateText.textContent = currentMode === 'slide-notes'
+        ? 'Generate Notes Draft'
+        : (currentMode === 'transform' ? 'Apply Transform' : 'Translate');
       btnTranslateSpinner.classList.add('hidden');
     }, 3000);
   }
